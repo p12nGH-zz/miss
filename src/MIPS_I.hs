@@ -14,7 +14,8 @@ type Memory = IOUArray Word32 Word8
 
 data CPU_State = CPU_State {
     gpr :: (IOUArray Word32 Word32),
-    mem :: Memory 
+    mem :: Memory,
+    hi, lo, ip :: IORef Word32 
 }
 type BF = Word32 --bit field type
 data Instruction
@@ -23,6 +24,14 @@ data Instruction
     | J {opcJ :: BF, addrJ :: BF} deriving (Show)
 
 type R a = ReaderT CPU_State IO a
+
+--helper functions to access special registers
+rSpecial r = (read, write) where
+    read = r <$> ask >>= lift . readIORef
+    write v = r <$> ask >>= (\h -> lift $ writeIORef h v)
+(rIP, wIP) = rSpecial ip
+(rHI, wHI) = rSpecial hi
+(rLO, wLO) = rSpecial lo
 
 -- read register
 rr :: Word32 -> R Word32
@@ -40,13 +49,13 @@ evalI :: Instruction -> R ()
 evalI (R _ rs rt rd shamt funct) = (opsR funct shamt) <$> rr rs <*> rr rt >>= wr rd
 
 opsR 0 shamt = f where
-    f _ t = shiftL t shamt
+    f _ t = shiftL' t shamt
 opsR 2 shamt = f where
-    f _ t = shiftR t shamt
+    f _ t = shiftR' t shamt
 opsR funct _ = opsRS funct
 
-opsRS 4  = shiftL
-opsRS 6  = shiftR
+opsRS 4  = shiftL'
+opsRS 6  = shiftR'
 opsRS 20 = signedOp (+)
 opsRS 21 = (+)
 opsRS 22 = signedOp (-)
@@ -54,8 +63,8 @@ opsRS 23 = (-)
 opsRS 24 = (.&.)
 opsRS 25 = (.|.)
 
-shiftL x s = shift x (fromIntegral s)
-shiftR x s = shift x (fromIntegral $ s * (-1))
+shiftL' x s = shift x (fromIntegral s)
+shiftR' x s = shift x (fromIntegral $ s * (-1))
 
 signedOp op = f where
     toSigned = fromIntegral :: (Word32 -> Int32)
