@@ -40,12 +40,20 @@ rr n = do
     regs <- gpr <$> ask
     lift $ readArray regs n
 
+--write register
 wr :: Word32 -> Word32 -> R ()
 wr n v = do
     regs <- gpr <$> ask
     lift $ writeArray regs n v
 
 evalI :: Instruction -> R ()
+evalI (I 8 rs rt imm) = (signedOp (+) (seImm imm)) <$> rr rs >>= wr rt
+evalI (I 9 rs rt imm) = (signedOp (+) (seImm imm)) <$> rr rs >>= wr rt
+evalI (I 0xC rs rt imm) = ((.&.) imm) <$> rr rs >>= wr rt
+evalI (I 0xD rs rt imm) = ((.|.) imm) <$> rr rs >>= wr rt
+evalI (I 0xE rs rt imm) = ((.|.) imm) <$> rr rs >>= wr rt
+evalI (R _ _ _ rd _ 10) = rHI >>= wr rd
+evalI (R _ _ _ rd _ 12) = rLO >>= wr rd
 evalI (R _ rs rt rd shamt funct) = (opsR funct shamt) <$> rr rs <*> rr rt >>= wr rd
 
 opsR 0 shamt = f where
@@ -63,8 +71,37 @@ opsRS 23 = (-)
 opsRS 24 = (.&.)
 opsRS 25 = (.|.)
 
+-- ALU helper functions
+
 shiftL' x s = shift x (fromIntegral s)
 shiftR' x s = shift x (fromIntegral $ s * (-1))
+
+-- sign extend to 32 bits
+se8 = (fromIntegral :: Int32 -> Word32)
+    . (fromIntegral :: Int8 -> Int32)
+    . (fromIntegral :: Word8 -> Int8)
+se16 = (fromIntegral :: Int32 -> Word32)
+     . (fromIntegral :: Int16 -> Int32)
+     . (fromIntegral :: Word16 -> Int16)
+seImm w = se16 $ fromIntegral $ w .|. 0xffff
+
+-- Memory
+readMemB :: Word32 -> R Word8
+readMemB addr = do
+    m <- mem <$> ask
+    lift $ readArray m (fromIntegral addr)
+
+readMemW :: Word32 -> R Word16
+readMemW addr = do
+    l <- fromIntegral <$> (readMemB addr)
+    h <- fromIntegral <$> (readMemB $ addr + 1)
+    return $ (shift 8 h) .|. l
+
+readMemDW :: Word32 -> R Word32
+readMemDW addr = do
+    l <- fromIntegral <$> (readMemW addr)
+    h <- fromIntegral <$> (readMemW $ addr + 2)
+    return $ (shift 16 h) .|. l
 
 signedOp op = f where
     toSigned = fromIntegral :: (Word32 -> Int32)
