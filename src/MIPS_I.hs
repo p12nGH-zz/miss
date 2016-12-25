@@ -23,6 +23,7 @@ data Instruction
     | I {opcI :: BF, rsI :: BF, rtI :: BF, immiI :: BF}
     | J {opcJ :: BF, addrJ :: BF} deriving (Show)
 
+-- processor state monad
 type R a = ReaderT CPU_State IO a
 
 --helper functions to access special registers
@@ -47,13 +48,16 @@ wr n v = do
     lift $ writeArray regs n v
 
 evalI :: Instruction -> R ()
-evalI (I 8 rs rt imm) = (signedOp (+) (seImm imm)) <$> rr rs >>= wr rt
-evalI (I 9 rs rt imm) = (signedOp (+) (seImm imm)) <$> rr rs >>= wr rt
+evalI (I 0x8 rs rt imm) = (signedOp (+) (seImm imm)) <$> rr rs >>= wr rt
+evalI (I 0x9 rs rt imm) = (signedOp (+) (seImm imm)) <$> rr rs >>= wr rt
 evalI (I 0xC rs rt imm) = ((.&.) imm) <$> rr rs >>= wr rt
 evalI (I 0xD rs rt imm) = ((.|.) imm) <$> rr rs >>= wr rt
-evalI (I 0xE rs rt imm) = ((.|.) imm) <$> rr rs >>= wr rt
-evalI (R _ _ _ rd _ 10) = rHI >>= wr rd
-evalI (R _ _ _ rd _ 12) = rLO >>= wr rd
+evalI (I 0xE rs rt imm) = (xor imm) <$> rr rs >>= wr rt
+evalI (I 0xA rs rt imm) = do
+  s <- rr rs
+  wr rt (if s < imm then 1 else 0)
+evalI (R _ _ _ rd _ 0x10) = rHI >>= wr rd
+evalI (R _ _ _ rd _ 0x12) = rLO >>= wr rd
 evalI (R _ rs rt rd shamt funct) = (opsR funct shamt) <$> rr rs <*> rr rt >>= wr rd
 
 opsR 0 shamt = f where
@@ -62,14 +66,19 @@ opsR 2 shamt = f where
     f _ t = shiftR' t shamt
 opsR funct _ = opsRS funct
 
-opsRS 4  = shiftL'
-opsRS 6  = shiftR'
-opsRS 20 = signedOp (+)
-opsRS 21 = (+)
-opsRS 22 = signedOp (-)
-opsRS 23 = (-)
-opsRS 24 = (.&.)
-opsRS 25 = (.|.)
+opsRS 0x4  = shiftL'
+opsRS 0x6  = shiftR'
+opsRS 0x20 = signedOp (+)
+opsRS 0x21 = (+)
+opsRS 0x22 = signedOp (-)
+opsRS 0x23 = (-)
+opsRS 0x24 = (.&.)
+opsRS 0x25 = (.|.)
+opsRS 0x26 = xor
+opsRS 0x27 = \s t -> complement $ s .|. t
+opsRS 0x2a = \s t -> if s < t then 1 else 0
+opsRS 0x2b = signedOp $ \s t -> if s < t then 1 else 0
+
 
 -- ALU helper functions
 
@@ -102,6 +111,13 @@ readMemDW addr = do
     l <- fromIntegral <$> (readMemW addr)
     h <- fromIntegral <$> (readMemW $ addr + 2)
     return $ (shift 16 h) .|. l
+
+writeMemB :: Word32 -> Word8 -> R ()
+writeMemB addr d = do
+    m <- mem <$> ask
+    lift $ writeArray m addr d
+
+
 
 signedOp op = f where
     toSigned = fromIntegral :: (Word32 -> Int32)
