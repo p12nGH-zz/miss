@@ -60,10 +60,10 @@ evalI (R _ _ _ rd _ 0x10) = rHI >>= wr rd
 evalI (R _ _ _ rd _ 0x12) = rLO >>= wr rd
 evalI (R _ rs rt rd shamt funct) = (opsR funct shamt) <$> rr rs <*> rr rt >>= wr rd
 
-opsR 0 shamt = f where
-    f _ t = shiftL' t shamt
-opsR 2 shamt = f where
-    f _ t = shiftR' t shamt
+opsR 0x0 shamt = \_ t -> shiftL' t shamt
+opsR 0x2 shamt = \_ t -> shiftR' t shamt
+opsR 0x3 shamt = \_ t -> (signedOp shiftR') t shamt
+opsR 0x7 shamt = \_ t -> (signedOp shiftL') t shamt
 opsR funct _ = opsRS funct
 
 opsRS 0x4  = shiftL'
