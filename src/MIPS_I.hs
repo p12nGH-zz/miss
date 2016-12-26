@@ -50,14 +50,20 @@ wr n v = do
 evalI :: Instruction -> R ()
 evalI (I 0x8 rs rt imm) = (signedOp (+) (seImm imm)) <$> rr rs >>= wr rt
 evalI (I 0x9 rs rt imm) = (signedOp (+) (seImm imm)) <$> rr rs >>= wr rt
-evalI (I 0xC rs rt imm) = ((.&.) imm) <$> rr rs >>= wr rt
-evalI (I 0xD rs rt imm) = ((.|.) imm) <$> rr rs >>= wr rt
-evalI (I 0xE rs rt imm) = (xor imm) <$> rr rs >>= wr rt
-evalI (I 0xA rs rt imm) = do
+evalI (I 0xc rs rt imm) = ((.&.) imm) <$> rr rs >>= wr rt
+evalI (I 0xd rs rt imm) = ((.|.) imm) <$> rr rs >>= wr rt
+evalI (I 0xe rs rt imm) = (xor imm) <$> rr rs >>= wr rt
+evalI (I 0xa rs rt imm) = do
   s <- rr rs
   wr rt (if s < imm then 1 else 0)
 evalI (R _ _ _ rd _ 0x10) = rHI >>= wr rd
 evalI (R _ _ _ rd _ 0x12) = rLO >>= wr rd
+evalI (R _ rs rt _ _ 0x1a) = do
+    quot <$> rr rs <*> rr rt >>= wLO
+    rem  <$> rr rs <*> rr rt >>= wHI
+evalI (R _ rs rt _ _ 0x1b) = do
+    (signedOp quot) <$> rr rs <*> rr rt >>= wLO
+    (signedOp rem)  <$> rr rs <*> rr rt >>= wHI
 evalI (R _ rs rt rd shamt funct) = (opsR funct shamt) <$> rr rs <*> rr rt >>= wr rd
 
 opsR 0x0 shamt = \_ t -> shiftL' t shamt
