@@ -1,11 +1,18 @@
-module MIPS_I where
+{-# LANGUAGE Strict #-}
+
+module MIPS_I (
+    run
+)
+where
 
 import Control.Monad.ST
 import Data.Array.IO
 import Data.Array.MArray
 import Data.Word
 import Control.Monad.Trans.Reader
+import Control.Monad.Trans.Except
 import Control.Monad.Trans.Class (lift)
+import Control.Monad
 import Data.Bits
 import Data.Int
 import Data.IORef
@@ -24,12 +31,18 @@ data Instruction
     | J {opcJ :: BF, addrJ :: BF} deriving (Show)
 
 -- processor state monad
-type R a = ReaderT CPU_State IO a
+type R a =  ReaderT CPU_State (ExceptT String IO) a
+
+state :: R CPU_State
+state = ask
+
+io :: IO a -> R a
+io = lift . lift
 
 --helper functions to access special registers
 rSpecial r = (read, write) where
-    read = r <$> ask >>= lift . readIORef
-    write v = r <$> ask >>= (\h -> lift $ writeIORef h v)
+    read = r <$> state >>= io . readIORef
+    write v = r <$> state >>= (\h -> io $ writeIORef h v)
 (rIP, wIP) = rSpecial ip
 (rHI, wHI) = rSpecial hi
 (rLO, wLO) = rSpecial lo
@@ -38,16 +51,56 @@ rSpecial r = (read, write) where
 rr :: Word32 -> R Word32
 rr 0 = return 0
 rr n = do
-    regs <- gpr <$> ask
-    lift $ readArray regs n
+    regs <- gpr <$> state
+    io $ readArray regs n
 
 --write register
 wr :: Word32 -> Word32 -> R ()
 wr n v = do
-    regs <- gpr <$> ask
-    lift $ writeArray regs n v
+    regs <- gpr <$> state
+    io $ writeArray regs n v
 
 evalI :: Instruction -> R ()
+
+-- memory load instructions
+evalI (I 0x23 rs rt imm) = ((+) imm) <$> rr rs >>= readMem32 >>= wr rt
+evalI (I 0x21 rs rt imm) = ((+) imm) <$> rr rs >>= \a -> se16 <$> readMem16 a >>= wr rt
+evalI (I 0x25 rs rt imm) = ((+) imm) <$> rr rs >>= \a -> fromIntegral <$> readMem16 a >>= wr rt
+evalI (I 0x20 rs rt imm) = ((+) imm) <$> rr rs >>= \a -> se8 <$> readMem8 a >>= wr rt
+evalI (I 0x24 rs rt imm) = ((+) imm) <$> rr rs >>= \a -> fromIntegral <$> readMem8 a >>= wr rt
+
+-- memory store instructions
+evalI (I 0x28 rs rt imm) = do
+    addr <- ((+) imm) <$> rr rs
+    d <- rr rt
+    writeMem8 addr (fromIntegral d)
+evalI (I 0x29 rs rt imm) = do
+    addr <- ((+) imm) <$> rr rs
+    d <- rr rt
+    writeMem16 addr (fromIntegral d)
+evalI (I 0x2b rs rt imm) = do
+    addr <- ((+) imm) <$> rr rs
+    d <- rr rt
+    writeMem32 addr d
+
+-- jump instructions
+evalI (I 0x4 rs rt imm) = do
+    c <- (==) <$> rr rs <*> rr rt
+    if c then upIP (imm * 4) else return ()
+evalI (I 0x5 rs rt imm) = do
+    c <- (/=) <$> rr rs <*> rr rt
+    if c then upIP (imm * 4) else return ()
+
+evalI (J 0x2 addr) = upIP (addr * 4 - 4)
+evalI (J 0x3 addr) = do
+    n <- rIP
+    wr 31 (n + 4)
+    upIP (addr * 4 - 4)
+evalI (R 0x8 rs _ _ _ _) = do
+    n <- rr rs
+    wIP (n - 4)
+
+-- logit and arithmetic
 evalI (I 0x8 rs rt imm) = (signedOp (+) (seImm imm)) <$> rr rs >>= wr rt
 evalI (I 0x9 rs rt imm) = (signedOp (+) (seImm imm)) <$> rr rs >>= wr rt
 evalI (I 0xc rs rt imm) = ((.&.) imm) <$> rr rs >>= wr rt
@@ -85,6 +138,9 @@ opsRS 0x27 = \s t -> complement $ s .|. t
 opsRS 0x2a = \s t -> if s < t then 1 else 0
 opsRS 0x2b = signedOp $ \s t -> if s < t then 1 else 0
 
+upIP n = do
+  o <- rIP
+  wIP $ o + n
 
 -- ALU helper functions
 
@@ -101,29 +157,37 @@ se16 = (fromIntegral :: Int32 -> Word32)
 seImm w = se16 $ fromIntegral $ w .|. 0xffff
 
 -- Memory
-readMemB :: Word32 -> R Word8
-readMemB addr = do
-    m <- mem <$> ask
-    lift $ readArray m (fromIntegral addr)
+readMem8 :: Word32 -> R Word8
+readMem8 addr = do
+    m <- mem <$> state
+    io $ readArray m (fromIntegral addr)
 
-readMemW :: Word32 -> R Word16
-readMemW addr = do
-    l <- fromIntegral <$> (readMemB addr)
-    h <- fromIntegral <$> (readMemB $ addr + 1)
+readMem16 :: Word32 -> R Word16
+readMem16 addr = do
+    l <- fromIntegral <$> (readMem8 addr)
+    h <- fromIntegral <$> (readMem8 $ addr + 1)
     return $ (shift 8 h) .|. l
 
-readMemDW :: Word32 -> R Word32
-readMemDW addr = do
-    l <- fromIntegral <$> (readMemW addr)
-    h <- fromIntegral <$> (readMemW $ addr + 2)
-    return $ (shift 16 h) .|. l
+readMem32 :: Word32 -> R Word32
+readMem32 addr = do
+    l <- fromIntegral <$> (readMem16 addr)
+    h <- fromIntegral <$> (readMem16 $ addr + 2)
+    return $ (shiftL 16 h) .|. l
 
-writeMemB :: Word32 -> Word8 -> R ()
-writeMemB addr d = do
-    m <- mem <$> ask
-    lift $ writeArray m addr d
+writeMem8 :: Word32 -> Word8 -> R ()
+writeMem8 addr d = do
+    m <- mem <$> state
+    io $ writeArray m addr d
 
+writeMem16 :: Word32 -> Word32 -> R ()
+writeMem16 addr d = do
+    writeMem8 addr $ fromIntegral d
+    writeMem8 (addr + 1) $ fromIntegral $ shiftR d 8
 
+writeMem32 :: Word32 -> Word32 -> R ()
+writeMem32 addr d = do
+    writeMem16 addr $ fromIntegral d
+    writeMem16 (addr + 2) $ fromIntegral $ shiftR d 16
 
 signedOp op = f where
     toSigned = fromIntegral :: (Word32 -> Int32)
@@ -152,8 +216,25 @@ readDecode a mem = do
     
         instr = case opc of
             0 -> R 0 rs rt rd shamt funct
-            2 -> J 2 addr 
+            2 -> J 2 addr
             3 -> J 3 addr
             _ -> I opc rs rt imm
     return $ instr
+
+fetchEval = do
+    m <- mem <$> state
+    ip <- rIP
+    io $ print ip
+    instr <- io $ readDecode ip m
+    evalI instr
+    upIP 4
+
+run :: Memory -> ExceptT String IO ()
+run m = do
+    gpr <- lift $ newArray (0, 31) 0
+    hi <- lift $ newIORef 0
+    lo <- lift $ newIORef 0
+    ip <- lift $ newIORef 0
+
+    runReaderT (replicateM_ 20 fetchEval) (CPU_State gpr m hi lo ip)
 
